@@ -1,4 +1,7 @@
+import os
+import re
 import time
+import openai
 from typing import Any, Dict, List, Optional
 
 import qdrant_client
@@ -16,6 +19,9 @@ from unstructured.cleaners.core import (
 
 from financial_bot.embeddings import EmbeddingModelSingleton
 from financial_bot.template import PromptTemplate
+
+from modules.financial_bot.financial_bot import constants
+from modules.financial_bot.financial_bot.openai_wrapper import OpenAIWrapper
 
 
 class StatelessMemorySequentialChain(chains.SequentialChain):
@@ -95,7 +101,7 @@ class ContextExtractorChain(Chain):
         The name of the collection to search in the vector store.
     """
 
-    top_k: int = 1
+    top_k: int = 3
     embedding_model: EmbeddingModelSingleton
     vector_store: qdrant_client.QdrantClient
     vector_collection: str
@@ -122,7 +128,7 @@ class ContextExtractorChain(Chain):
         # (or other time frame).
         matches = self.vector_store.search(
             query_vector=embeddings,
-            k=self.top_k,
+            limit=self.top_k,
             collection_name=self.vector_collection,
         )
 
@@ -154,65 +160,139 @@ class ContextExtractorChain(Chain):
 
         return question
 
-
 class FinancialBotQAChain(Chain):
     """This custom chain handles LLM generation upon given prompt"""
-
     hf_pipeline: HuggingFacePipeline
     template: PromptTemplate
 
     @property
     def input_keys(self) -> List[str]:
         """Returns a list of input keys for the chain"""
-
         return ["context"]
 
     @property
     def output_keys(self) -> List[str]:
         """Returns a list of output keys for the chain"""
-
         return ["answer"]
+
+    def add_chain_of_thought(self) -> str:
+        """Adds a chain of thought prompt to guide reasoning."""
+        return (
+            "Let's think step by step to provide a thorough and accurate response:"
+        )
+
+    def enrich_about_me(self, inputs) -> str:
+        openai_llm = OpenAIWrapper()
+        enrich_about_me_response = openai_llm.generate_response(
+            prompt=f"please take the about_me field and generate more instructions based on that related to the financial bot, "
+                   f"please make it short \n"
+                   f"about_me={inputs['about_me']}\n")
+
+        print(f"enrich_about_me_response: {enrich_about_me_response}")
+        inputs["about_me"] += enrich_about_me_response
+
+    def choose_best_response(self, responses: List[str]) -> str:
+        """Aggregates multiple responses to find the most consistent answer."""
+        if len(responses) == 1:
+            return responses[0]
+
+        openai_llm = OpenAIWrapper()
+        evaluation_prompt = (
+                "You are an expert assistant with financial expertise, helping to evaluate multiple answers to a question. "
+                "Choose the best response based on accuracy, clarity, and relevance to the question.\n"
+                "\n"
+                f"Responses:\n"
+                + "\n".join([f"Response {i + 1}: {response}" for i, response in enumerate(responses)]) + "\n"
+                                                                                                         "\n"
+                "Provide the number of the best response and explain your reasoning briefly."
+        )
+
+        evaluation_result = openai_llm.generate_response(prompt=evaluation_prompt)
+
+        print(f"Evaluation Result: {evaluation_result}")
+
+        # Extract the chosen response number from the evaluation result
+        chosen_response_index = self.extract_chosen_response_index(evaluation_result)
+        return responses[chosen_response_index]
+
+    def extract_chosen_response_index(self, evaluation_result: str) -> int:
+        """Extracts the index of the chosen response from the evaluation result."""
+        match = re.search(r"Response (\d+)", evaluation_result)
+        if match:
+            return int(match.group(1)) - 1  # Convert to zero-based index
+        else:
+            raise ValueError("Failed to extract chosen response index from evaluation result.")
+
+    def generate_multiple_responses(self, prompt: str) -> List[str]:
+        """Generates multiple responses for self-consistency."""
+        responses = []
+        num_consistency_samples = constants.NUM_CONSISTENCY_SAMPLES
+        for _ in range(num_consistency_samples):
+            response = self.hf_pipeline(prompt)
+            responses.append(response.strip())
+        return responses
+
 
     def _call(
         self,
         inputs: Dict[str, Any],
         run_manager: Optional[CallbackManagerForChainRun] = None,
+        use_about_me_context_enrichment: bool = True,
+        use_zero_cot: bool = True,
     ) -> Dict[str, Any]:
         """Calls the chain with the given inputs and returns the output"""
 
         inputs = self.clean(inputs)
+
+        if use_about_me_context_enrichment:
+            self.enrich_about_me(inputs)
+
+        zero_cot = ""
+        if use_zero_cot:
+            zero_cot = self.add_chain_of_thought()
+
         prompt = self.template.format_infer(
             {
                 "user_context": inputs["about_me"],
+                "instructions": zero_cot,
                 "news_context": inputs["context"],
                 "chat_history": inputs["chat_history"],
                 "question": inputs["question"],
             }
         )
 
+        full_prompt = prompt["prompt"]
         start_time = time.time()
-        response = self.hf_pipeline(prompt["prompt"])
+
+        print (f"full_prompt: {full_prompt}")
+        # Generate multiple responses
+        responses = self.generate_multiple_responses(full_prompt)
+        # Aggregate responses for self-consistency
+        final_response = self.choose_best_response(responses)
+
+        print (f"final_response: {final_response}")
+
         end_time = time.time()
         duration_milliseconds = (end_time - start_time) * 1000
 
         if run_manager:
             run_manager.on_chain_end(
                 outputs={
-                    "answer": response,
+                    "answer": final_response,
                 },
                 # TODO: Count tokens instead of using len().
                 metadata={
-                    "prompt": prompt["prompt"],
+                    "prompt": full_prompt,
                     "prompt_template_variables": prompt["payload"],
                     "prompt_template": self.template.infer_raw_template,
-                    "usage.prompt_tokens": len(prompt["prompt"]),
-                    "usage.total_tokens": len(prompt["prompt"]) + len(response),
-                    "usage.actual_new_tokens": len(response),
+                    "usage.prompt_tokens": len(full_prompt),
+                    "usage.total_tokens": len(full_prompt) + len(final_response),
+                    "usage.actual_new_tokens": len(final_response),
                     "duration_milliseconds": duration_milliseconds,
                 },
             )
 
-        return {"answer": response}
+        return {"answer": final_response}
 
     def clean(self, inputs: Dict[str, str]) -> Dict[str, str]:
         """Cleans the inputs by removing extra whitespace and grouping broken paragraphs"""
