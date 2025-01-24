@@ -178,7 +178,7 @@ class FinancialBotQAChain(Chain):
     def add_chain_of_thought(self) -> str:
         """Adds a chain of thought prompt to guide reasoning."""
         return (
-            "Let's think step by step to provide a thorough and accurate response:"
+            "Let's think step by step: "
         )
 
     def enrich_about_me(self, inputs) -> str:
@@ -189,9 +189,9 @@ class FinancialBotQAChain(Chain):
                    f"about_me={inputs['about_me']}\n")
 
         print(f"enrich_about_me_response: {enrich_about_me_response}")
-        inputs["about_me"] += enrich_about_me_response
+        inputs["about_me"] += '\n' + enrich_about_me_response
 
-    def choose_best_response(self, responses: List[str]) -> str:
+    def choose_best_response(self, question: str, responses: List[str]) -> str:
         """Aggregates multiple responses to find the most consistent answer."""
         if len(responses) == 1:
             return responses[0]
@@ -200,6 +200,7 @@ class FinancialBotQAChain(Chain):
         evaluation_prompt = (
                 "You are an expert assistant with financial expertise, helping to evaluate multiple answers to a question. "
                 "Choose the best response based on accuracy, clarity, and relevance to the question.\n"
+                f"Question: {question}\n"
                 "\n"
                 f"Responses:\n"
                 + "\n".join([f"Response {i + 1}: {response}" for i, response in enumerate(responses)]) + "\n"
@@ -237,7 +238,7 @@ class FinancialBotQAChain(Chain):
         self,
         inputs: Dict[str, Any],
         run_manager: Optional[CallbackManagerForChainRun] = None,
-        use_about_me_context_enrichment: bool = True,
+        use_about_me_context_enrichment: bool = False,
         use_zero_cot: bool = True,
     ) -> Dict[str, Any]:
         """Calls the chain with the given inputs and returns the output"""
@@ -254,10 +255,9 @@ class FinancialBotQAChain(Chain):
         prompt = self.template.format_infer(
             {
                 "user_context": inputs["about_me"],
-                "instructions": zero_cot,
                 "news_context": inputs["context"],
                 "chat_history": inputs["chat_history"],
-                "question": inputs["question"],
+                "question": inputs["question"] + "\n" + zero_cot,
             }
         )
 
@@ -268,7 +268,7 @@ class FinancialBotQAChain(Chain):
         # Generate multiple responses
         responses = self.generate_multiple_responses(full_prompt)
         # Aggregate responses for self-consistency
-        final_response = self.choose_best_response(responses)
+        final_response = self.choose_best_response(question=inputs["question"], responses=responses)
 
         print (f"final_response: {final_response}")
 
