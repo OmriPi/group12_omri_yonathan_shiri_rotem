@@ -20,8 +20,8 @@ from unstructured.cleaners.core import (
 from financial_bot.embeddings import EmbeddingModelSingleton
 from financial_bot.template import PromptTemplate
 
-from modules.financial_bot.financial_bot import constants
-from modules.financial_bot.financial_bot.openai_wrapper import OpenAIWrapper
+from financial_bot import constants
+from financial_bot.openai_wrapper import OpenAIWrapper
 
 
 class StatelessMemorySequentialChain(chains.SequentialChain):

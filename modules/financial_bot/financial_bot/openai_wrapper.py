@@ -4,7 +4,7 @@ from typing import Dict
 
 
 class OpenAIWrapper:
-    def __init__(self, api_key: str = None, engine: str = "gpt-3.5-turbo-instruct",
+    def __init__(self, api_key: str = None, engine: str = "gpt-4o-mini",
                  temperature: float = 0.0, max_tokens: int = 100):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
