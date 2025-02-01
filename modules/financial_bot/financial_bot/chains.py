@@ -114,7 +114,7 @@ class ContextExtractorChain(Chain):
     def output_keys(self) -> List[str]:
         return ["context"]
 
-    def _call(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def _call(self, inputs: Dict[str, Any], payload_part: str = "summary") -> Dict[str, Any]:
         _, quest_key = self.input_keys
         question_str = inputs[quest_key]
 
@@ -134,7 +134,7 @@ class ContextExtractorChain(Chain):
 
         context = ""
         for match in matches:
-            context += match.payload["summary"] + "\n"
+            context += match.payload[payload_part] + "\n"
 
         return {
             "context": context,
@@ -219,10 +219,14 @@ class FinancialBotQAChain(Chain):
     def extract_chosen_response_index(self, evaluation_result: str) -> int:
         """Extracts the index of the chosen response from the evaluation result."""
         match = re.search(r"Response (\d+)", evaluation_result)
-        if match:
-            return int(match.group(1)) - 1  # Convert to zero-based index
-        else:
-            raise ValueError("Failed to extract chosen response index from evaluation result.")
+        try:
+            if match:
+                index = int(match.group(1)) - 1  # Convert to zero-based index
+                return index if index <= constants.NUM_CONSISTENCY_SAMPLES - 1 else 0
+        except Exception as e:
+            print(f"Failed to extract chosen response index from evaluation result. {e}")
+
+        return 0
 
     def generate_multiple_responses(self, prompt: str) -> List[str]:
         """Generates multiple responses for self-consistency."""

@@ -8,7 +8,8 @@ EMBEDDING_MODEL_MAX_INPUT_LENGTH = 384
 VECTOR_DB_OUTPUT_COLLECTION_NAME = "alpaca_financial_news"
 VECTOR_DB_SEARCH_TOPK = 3
 
-NUM_CONSISTENCY_SAMPLES = 1
+# == Number of self-consistency operations ==
+NUM_CONSISTENCY_SAMPLES = 3
 
 # == LLM Model ==
 LLM_MODEL_ID = "tiiuae/falcon-7b-instruct"
